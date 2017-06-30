@@ -20,10 +20,15 @@ rm mrtmp.*
 
 #### part 3
 #debug is similar
-go test -run TestBasic mapreduce/...
+go test -v -run TestBasic mapreduce/...
 
+####Use Go's race detector:
+go test --race mypkg
 
-##Skip part 4 since it is not very relevent
+##### part 4
+go test -run Failure mapreduce/...
+
+##Skip part 5 since it is not very relevent
 
 #run ALL tests
 sh src/main/test-mr.sh
