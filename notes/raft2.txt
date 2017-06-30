@@ -1,0 +1,79 @@
+Could a received InstallSnapshot RPC cause the state machine to go backwards in time? That is, could step 8 in Figure 13 cause the state machine to be reset so that it reflects fewer executed operations? If yes, explain how this could happen. If no, explain why it can't happen.
+
+
+------
+
+could new leader roll back *executed* entries from end of previous term?
+  i.e. could an executed entry be missing from the new leader's log?
+  this would be a disaster -- violates State Machine Safety
+  solution: Raft won't elect a leader that might not have an executed entry
+
+could we choose leader with longest log?
+  example:
+    S1: 5 6 7
+    S2: 5 8
+    S3: 5 8
+  first, could this scenario happen? how?
+    S1 leader in term 6; crash+reboot; leader in term 7; crash and stay down
+      both times it crashed after only appending to its own log
+    S2 leader in term 8, only S2+S3 alive, then crash
+  who should be next leader?
+    S1 has longest log, but entry 8 could have been executed !!!
+    so new leader can only be one of S2 or S3
+    i.e. the rule cannot be simply "longest log"
+
+
+  compare last entry -- higher term wins
+  if equal terms, longer log wins
+  so only S3 or S3 can be leader, will force S1 to discard 6,7
+    ok since no majority -> not executed -> no client reply
+
+the point:
+  "at least as up to date" rule ensures new leader's log contains
+    all potentially executed entries
+  so new leader won't roll back any executed operation
+
+
+The Question (from last lecture)
+  figure 7, top server is dead; which of a/d/f can be elected?
+  i.e. majority of votes from "less up to date" servers?
+
+depending on who is elected leader in Figure 7, different entries
+  will end up committed or discarded
+  c's 6 and d's 7,7 may be discarded OR committed
+  some will always remain committed: 111445566
+
+is it OK to forget 2? could it have been executed?
+  not when S1 initially sent it, since not initially on majority
+  could S1 have mentioned it in leaderCommit after re-elected for term=4?
+  no! very end of Figure 2 says "log[N].term == currentTerm"
+  and S1 was in term 4 when sending 3rd copy of 2
+
+so an entry becomes commited if:
+  1) it reached a majority in the term it was initially sent out, or
+  2) if a subsequent log entry becomes committed.
+     2 *could* have committed if S1 hadn't lost term=4 leadership
+
+if a server crashes and restarts, what must it remember?
+  Figure 2 lists "persistent state":
+    currentTerm, votedFor, log[]
+  a Raft server can only re-join after restart if these are intact
+  thus it must save them to non-volatile storage after changing them
+    before sending any RPC or RPC reply
+  non-volatile = disk, SSD, &c
+  why log[]?
+    if a rebooted server was in server's majority for committing an entry,
+      but then forgets, a future server might not see this log entry
+  why currentTerm/votedFor?
+    to prevent a client from voting for one candidate, then reboot,
+      then vote for a different candidate in the same (or older!) term
+    could lead to two leaders for a single term
+
+  to get more throughput, "shard" or split the data across
+    many separate Raft clusters, each with 3 or 5 servers
+    different clusters can work in parallel, since they don't interact
+    lab 4
+
+  or use Raft for fault-tolerant master and something else
+    that replicates data more efficiently than Raft, e.g. GFS chunkservers
+

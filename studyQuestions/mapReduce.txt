@@ -1,0 +1,12 @@
+Preview Question
+How soon after it receives the first file of intermediate data can a reduce worker start calling the application's Reduce function? Explain your answer.
+
+
+Review Questions
+Sample word count MapReduce(MR) pesudo-code
+Why MR requires the function purely functional
+Why many more input splits than workers?
+During the whole MR process, what files are written into GFS?
+What if the master accidentally starts *two* Map() workers on same input?
+ What if two Reduce() workers for the same partition of intermediate data?
+Examples that does not fit MR model

@@ -1,0 +1,24 @@
+How does VM FT handle network partitions? That is, is it possible that if the primary and the backup end up in different network partitions that the backup will become a primary too and the system will run with two primaries?
+
+-------
+Two main approaches:
+  State transfer
+    "Primary" replica executes the service
+    Primary sends [new] state to backups
+  Replicated state machine
+    All replicas execute all operations
+    If same start state,
+      same operations,
+      same order,
+      deterministic,
+      then same end state
+
+State transfer is simpler
+  But state may be large, slow to transfer
+  VM-FT uses replicated state machine
+
+Replicated state machine can be more efficient
+  If operations are small compared to data
+  But complex to get right
+    e.g. order on multi-core, determinism
+  Labs use replicated state machines

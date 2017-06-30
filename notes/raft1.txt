@@ -1,0 +1,82 @@
+Suppose we have the scenario shown in the Raft paper's Figure 7: a cluster of seven servers, with the log contents shown. The first server crashes (the one at the top of the figure), and cannot be contacted. A leader election ensues. For each of the servers marked (a), (d), and (f), could that server be elected? If yes, which servers would vote for it? If no, what specific Raft mechanism(s) would prevent it from being elected?
+
+-------
+
+ in general we cannot distinguish between "crashed" and "partitioned"
+
+rf.Start(command) (index, term, isleader)
+    start agreement on a new log entry
+    returns immediately; will succeed (or not) later
+    might not succeed if server loses leadership before committing command
+    index indicates what log entry to watch
+  ApplyMsg, with Index and Command
+    Raft generates a message on a channel when the service (k/v server)
+    should execute a new command. this also notifies client RPC handler
+    on leader so it can reply to the client.
+
+note: leader should not wait for replies to the AppendEntries RPCs!
+  don't want to be blocked by failed servers
+  so send each in a goroutine
+  this means the RPCs may arrive out of order
+
+
+how does a server know that election succeeded?
+  winner gets yes votes from majority
+  others see the AppendEntries heart-beats from winner
+
+how does Raft reduce chances of election failure due to split vote?
+  each server delays a random amount of time before starting candidacy
+  why is the random delay useful?
+    [diagram of times at which servers' delays expire]
+    one will choose lowest random delay
+    hopefully enough time to elect before next timeout expires
+    others will see new leader's AppendEntries heartbeats and 
+      not become candidates
+
+Raft's elections follow a common pattern: separation of safety from progress
+  hard mechanisms rule out > 1 leader, to avoid split brain
+    but might be no leader, or unknown outcome
+  soft mechanisms try to ensure progress
+    always safe to start a new election in a new term
+  soft mechanisms try to avoid unnecessary elections
+    heartbeat from leader (remind servers not to start election)
+    timeout period (don't start election too soon)
+    random delays (give one leader time to be elected)
+
+what if old leader isn't aware a new one is elected?
+  perhaps old leader didn't see election messages
+  new leader means a majority of servers have incremented currentTerm
+    so old leader (w/ old term) can't get majority for AppendEntries
+    so old leader won't commit or execute any new log entries
+    thus no split brain despite partition
+    but a minority may accept old server's AppendEntries
+      so logs may diverge at end of old term
+
+---------
+
+how can logs disagree?
+  a log might be short -- missing entries at end of the term
+    leader of term 3 crashes before sending all AppendEntries
+    S1: 3
+    S2: 3 3
+    S3: 3 3
+  logs might have different commands in same entry!
+    after a series of leader crashes, e.g.
+        10 11 12 13  <- log entry #
+    S1:  3
+    S2:  3  3  4
+    S3:  3  3  5
+
+-------
+
+
+new leader will force its log on followers; example:
+  S3 is chosen as new leader for term 6
+  S3 sends a new command, entry 13, term 6
+    AppendEntries, previous entry 12, previous term 5
+  S2 replies false (AppendEntries step 2)
+  S3 decrements nextIndex[S2] to 12
+  S3 sends AppendEntries, prev entry 11, prev term 3
+  S2 deletes entry 12 (AppendEntries step 3)
+  similar story for S1, but have to go back one farther
+
