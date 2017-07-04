@@ -12,3 +12,6 @@ go test -run 2A
 
 
 ###part 2B
+go test -run 2B
+
+go test -run 2B > out
