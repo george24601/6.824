@@ -147,30 +147,12 @@ type AppendEntriesReply struct {
 	Success bool 
 }
 
-func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
-	if args.Term < rf.currentTerm {
-		DPrintf("%d of status %d, term %d refused to append entries for %d at term %d, because request is from the past", rf.me, rf.status, rf.currentTerm, args.LeaderId, args.Term)
-		reply.Success = false
-		reply.Term = rf.currentTerm
-		return
-	}
-
-	rf.CheckOldTermWithinLock(args.Term)
-
-	curLogLen := len(rf.log)
-
-	if curLogLen <= args.PrevLogIndex  || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-		DPrintf("%d of status %d, term %d refused to append entries for %d at term %d, because prevLogTerm does not match the local log", rf.me, rf.status, rf.currentTerm, args.LeaderId, args.Term)
-		reply.Success = false
-		reply.Term = rf.currentTerm
-		return
-	}
-
+func (rf *Raft) AppendToLogWithinLock(args *AppendEntriesArgs) {
 	newIndex := 0
 	newELen := len(args.Entries)
+
+	curLogLen := len(rf.log)
 
 	for ;newIndex < newELen; newIndex++ {
 
@@ -192,6 +174,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 
 	if args.LeaderCommit > rf.commitIndex {
+		DPrintf("%d of status %d, term %d updating commit index currently at %d, leaderCommit:%d, index of last new entry: %d", rf.me, rf.status, rf.currentTerm, rf.commitIndex, args.LeaderCommit, args.PrevLogIndex + newELen)
+
 		if args.LeaderCommit < args.PrevLogIndex + newELen {
 			rf.commitIndex = args.LeaderCommit
 		} else {
@@ -199,16 +183,48 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}
 
+	if newELen > 0 {
+		DPrintf("%d of end status %d, term %d agree to append entries of length %d for server %d at term %d, after apply: commitIndex: %d, lastApplied: %d, log len: %d", rf.me, rf.status, rf.currentTerm, newELen, args.LeaderId, args.Term, rf.commitIndex, rf.lastApplied, len(rf.log) - 1)
+	}
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+
+	if args.Term < rf.currentTerm {
+		DPrintf("%d of status %d, term %d refused to append entries for %d at term %d, because request is from the past", rf.me, rf.status, rf.currentTerm, args.LeaderId, args.Term)
+		reply.Success = false
+		reply.Term = rf.currentTerm
+		rf.mu.Unlock()
+		return
+	}
+
+	rf.CheckOldTermWithinLock(args.Term)
+
+	curLogLen := len(rf.log)
+
+	if curLogLen <= args.PrevLogIndex  || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		DPrintf("%d of status %d, term %d refused to append entries for %d at term %d, because prevLogTerm does not match the local log", rf.me, rf.status, rf.currentTerm, args.LeaderId, args.Term)
+		reply.Success = false
+		reply.Term = rf.currentTerm
+
+		rf.mu.Unlock()
+		return
+	}
+
+	rf.AppendToLogWithinLock(args)
+
 	reply.Success = true
 	reply.Term = args.Term
 
-	DPrintf("%d of end status %d, term %d agree to append entries for %d at term %d, commitIndex: %d, lastApplied: %d", rf.me, rf.status, rf.currentTerm, args.LeaderId, args.Term, rf.commitIndex, rf.lastApplied)
-
-	if(rf.status == 0){
-		rf.fHB <- args.Term
-	}else{
-		DPrintf("!!!BAD STATE")
+	if rf.status != 0 {
+		DPrintf("%d of status %d, term %d ready to append, and thus becoming follower!", rf.me, rf.status, rf.currentTerm)
+		rf.status = 0 //this server may be a candidate from an isolated session
 	}
+
+	rf.mu.Unlock()
+	//we don't want to block while holding the lock!
+	rf.fHB <- args.Term
 
 	//DPrintf("%d of status %d, term %d agree to append entries for %d at term %d, commitIndex: %d, lastApplied: %d RETURNING!", rf.me, rf.status, rf.currentTerm, args.LeaderId, args.Term, rf.commitIndex, rf.lastApplied)
 }
@@ -225,7 +241,6 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
 	index := -1
 	term := -1
@@ -236,6 +251,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		term = rf.currentTerm
 		rf.log = append(rf.log, LE{command, term})
 		rf.nextIndex[rf.me] = len(rf.log)
+		rf.matchIndex[rf.me] = len(rf.log) - 1
+
+		DPrintf("START Leader %d at term %d just appended locally, local next index at %d", rf.me, rf.currentTerm, len(rf.log))
+		rf.mu.Unlock()
+
+		rf.RepToAllFs()
+	}else{
+		rf.mu.Unlock()
 	}
 
 	return index, term, isLeader
@@ -246,7 +269,7 @@ func (rf *Raft) Kill() {
 }
 
 func randomElectionTimeout() time.Duration {
-	return time.Duration(rand.Intn(300) + 400) * time.Millisecond
+	return time.Duration(rand.Intn(400) + 400) * time.Millisecond
 }
 
 func (rf *Raft) RunFollower() {
@@ -278,13 +301,22 @@ func (rf *Raft) TryChangeStatus(from int, to int) {
 
 func (rf *Raft) RunCandidate() {
 	rf.mu.Lock()
-	rf.currentTerm= rf.currentTerm  + 1
-	rf.votedFor = rf.me
-	rf.mu.Unlock()
+	if rf.status != 1 {
+		DPrintf("Candidate %d term %d actually at status %d, becoming a follower", rf.me, rf.currentTerm, rf.status) 
+		rf.status = 0
+		rf.mu.Unlock()
+		return
+	} 
+		rf.currentTerm= rf.currentTerm  + 1
+		rf.votedFor = rf.me
+		curTerm := rf.currentTerm 
+		lastLogIndex := len(rf.log) - 1
+		lastLogTerm := rf.log[lastLogIndex].Term
+		rf.mu.Unlock()
 
-	//DPrintf("Candidate: %d at term: %d" , rf.me, curTerm)
+	DPrintf("Candidate: %d at term: %d" , rf.me, curTerm)
 
-	cRVR := make(chan RequestVoteReply, len(rf.peers))
+	cRVR := make(chan RequestVoteReply, len(rf.peers) * 5) //TODO:double check this!
 	for  i:=0; i<len(rf.peers);i++ {
 		if i == rf.me {
 			continue
@@ -294,11 +326,9 @@ func (rf *Raft) RunCandidate() {
 			args := &RequestVoteArgs{}
 			args.CandidateId = rf.me
 
-			rf.mu.Lock()
 			args.Term = rf.currentTerm
-			args.LastLogIndex = len(rf.log) - 1
-			args.LastLogTerm = rf.log[args.LastLogIndex].Term
-			rf.mu.Unlock()
+			args.LastLogIndex = lastLogIndex
+			args.LastLogTerm = lastLogTerm
 
 			reply := &RequestVoteReply{ }
 			ok := rf.sendRequestVote(k, args,  reply)
@@ -306,7 +336,7 @@ func (rf *Raft) RunCandidate() {
 			if ok {
 				cRVR <- *reply
 			}else{
-				//	DPrintf("Candidate %d to %d vote request is not ok, term: %d", rf.me, k, curTerm)
+				DPrintf("Candidate %d to %d vote request is not ok, term: %d", rf.me, k, curTerm)
 			}
 		}(i)
 	}
@@ -316,15 +346,7 @@ func (rf *Raft) RunCandidate() {
 
 	electionTimeout := randomElectionTimeout()
 
-	var curStatus int
-	rf.mu.Lock()
-	curStatus = rf.status
-	rf.mu.Unlock()
-
-	if curStatus != 1 {
-		DPrintf("Candidate state out of sync: %d", rf.me)
-		return
-	}
+	var statusToGo int
 
 	for {
 		select {
@@ -332,39 +354,43 @@ func (rf *Raft) RunCandidate() {
 			if reply.VoteGranted {
 
 				grantedVotes++
-				DPrintf("Candidate %d get a vote, %d votes so far", rf.me, grantedVotes)
+				//DPrintf("Candidate %d get a vote, %d votes so far", rf.me, grantedVotes)
 				if grantedVotes * 2 > len(rf.peers) {
-
-					rf.mu.Lock()
-					rf.status = 2
-					rf.mu.Unlock()
-					return
+					DPrintf("Candidate %d get a vote, %d votes so far", rf.me, grantedVotes)
+					statusToGo = 2
+					goto updateStatus
 				}
 
 
-			}else if reply.Term > rf.currentTerm {
+			}else if reply.Term > curTerm {
 				DPrintf("Candidate %d outdated, converted to follower", rf.me)
-
-				rf.mu.Lock()
-				rf.status = 0
-
-				rf.mu.Unlock()
-				return
+				statusToGo = 0
+				goto updateStatus
 			}else{
 				DPrintf("Candidate %d did not get a vote", rf.me)
 			}
 			case <- time.After(electionTimeout):{
-				//DPrintf("Candidate %d has election timeout at term %d", rf.me, curTerm)
-				return //election timeout - start new election!
+				DPrintf("Candidate %d has election timeout at term %d, start new election!", rf.me, curTerm)
+				statusToGo = 1
+				goto updateStatus
 			}
 		}
 	}
+
+	updateStatus:
+	rf.mu.Lock()
+	if rf.status != 1 {
+		DPrintf("Candidate %d at term %d currently has status %d?!", rf.me, rf.currentTerm, rf.status)
+		statusToGo = 0
+	}
+
+	rf.status = statusToGo
+	rf.mu.Unlock()
 }
 
 
 func (rf *Raft) UpdateCIWithinLock() {
 	for N := rf.commitIndex + 1; N < len(rf.log); N++ {
-
 		var goodC int = 0
 		for i := 0; i < len(rf.peers); i++ {
 			if rf.matchIndex[i]  >= N && rf.log[N].Term == rf.currentTerm {
@@ -374,34 +400,51 @@ func (rf *Raft) UpdateCIWithinLock() {
 
 		if goodC * 2 > len(rf.peers) {
 			rf.commitIndex = N
-		}else{
-			break
+			DPrintf("Leader: %d at term %d has new commitIndex %d", rf.me, rf.currentTerm, rf.commitIndex)
 		}
+	}
+}
+
+func (rf *Raft) RepToAllFs(){
+	for i := 0; i < len(rf.peers); i++  {
+		if i == rf.me {
+			continue
+		}
+
+		go func(k int) {
+			rf.RepToFollower(k)
+		}(i)
 	}
 }
 
 func (rf *Raft) RepToFollower(k int) {
 	for {
-		args := &AppendEntriesArgs{}
-		args.LeaderId = rf.me
-
 		rf.mu.Lock()
+		if rf.status != 2 {
+			rf.mu.Unlock()
+			return
+		}
+
+		args := &AppendEntriesArgs{}
 		args.Term = rf.currentTerm
+		args.LeaderId = rf.me
 
 		lastLogIndex := len(rf.log) - 1
 
-		if lastLogIndex >= rf.nextIndex[k]{
-			DPrintf("Leader: %d at term %d appending to %d from %d " , rf.me, args.Term, k, rf.nextIndex[k])
-			args.Entries = rf.log[rf.nextIndex[k]:]
-			args.PrevLogIndex = rf.nextIndex[k] - 1
+		nextIndexF := rf.nextIndex[k]
+		if lastLogIndex >= nextIndexF {
+			DPrintf("RepToFollower: Leader: %d at term %d appending to %d starting from index %d " , rf.me, args.Term, k, nextIndexF)
+			args.PrevLogIndex = nextIndexF - 1
 			args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
-
-		}else  {
-			DPrintf("Leader: %d at term %d, lastLogIndex %d, appending to %d, nextIndex at %d as heartbeat??? " , rf.me, args.Term, lastLogIndex, k, rf.nextIndex[k])
+			args.Entries = rf.log[nextIndexF:]
+		} else {
+			//DPrintf("Leader: %d at term %d, lastLogIndex %d, appending to %d, nextIndex at %d as heartbeat??? " , rf.me, args.Term, lastLogIndex, k, rf.nextIndex[k])
 			args.PrevLogIndex = lastLogIndex
-			args.PrevLogTerm = rf.log[lastLogIndex].Term
+			args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
 			args.Entries = make([]LE, 0) 
 		}
+
+		args.LeaderCommit = rf.commitIndex
 
 		rf.mu.Unlock()
 
@@ -409,12 +452,17 @@ func (rf *Raft) RepToFollower(k int) {
 		ok := rf.sendAppendEntries(k, args, reply)
 
 		if !ok {
-			DPrintf("NOT OK: Leader: %d append to %d at lastLogindex %d" , rf.me, k, lastLogIndex)
+			//DPrintf("NOT OK: Leader: %d append to server %d at lastLogindex %d" , rf.me, k, lastLogIndex)
 			return
 		}
 
 		rf.mu.Lock()
-		if reply.Term > rf.currentTerm || rf.status == 0 {
+		if rf.status != 2 {
+			DPrintf("!!!!!Leader: %d at term %d find itself is at status %d, therefore becoming a follower" , rf.me, rf.currentTerm, rf.status)
+			rf.status = 0
+			rf.mu.Unlock()
+			return
+		} else if reply.Term > rf.currentTerm {
 			DPrintf("!!!!!Leader: %d at term %d find itself stale during heartbeat, new term at %d, ready to become follower" , rf.me, rf.currentTerm, reply.Term)
 			rf.status = 0
 			rf.currentTerm = reply.Term
@@ -422,19 +470,19 @@ func (rf *Raft) RepToFollower(k int) {
 			rf.mu.Unlock()
 			return
 		}else if (reply.Success) {
-			DPrintf("Leader: %d at term %d append to %d at term %d successfully at lastLogindex %d" , rf.me, rf.currentTerm, k, reply.Term, lastLogIndex)
+			if len(args.Entries) > 0 {
+				DPrintf("Leader: %d at term %d append to server %d at term %d successfully, update that server's matchIndex to %d, leader's current lastIndex at %d" , rf.me, rf.currentTerm, k, reply.Term, lastLogIndex, len(rf.log) - 1)
+			}
 			rf.matchIndex[k] = lastLogIndex
 			rf.nextIndex[k] = lastLogIndex + 1
 			rf.UpdateCIWithinLock()
 			rf.mu.Unlock()
-			return;
+			return
 		}else {
-			DPrintf("Leader: %d at term %d UNABLE TO append to %d at last index %d, reducing nextIndex currently at %d " , rf.me, rf.currentTerm, k, lastLogIndex, rf.nextIndex[k])
+			DPrintf("Leader: %d at term %d UNABLE TO append to server %d at last index %d, reducing nextIndex currently at %d " , rf.me, rf.currentTerm, k, lastLogIndex, rf.nextIndex[k])
 			rf.nextIndex[k]--
 		}
-
 		rf.mu.Unlock()
-
 	}
 }
 
@@ -465,17 +513,8 @@ func (rf *Raft) RunLeader() {
 			return
 		}
 
-		for i := 0; i < len(rf.peers); i++  {
-			if i == rf.me {
-				continue
-			}
-
-			go func(k int) {
-				rf.RepToFollower(k)
-			}(i)
-		}
-
-		time.Sleep(120 * time.Millisecond)
+		rf.RepToAllFs()
+		time.Sleep(150 * time.Millisecond)
 	}
 }
 
@@ -511,8 +550,6 @@ func (rf *Raft) ApplyLog(applyCh chan ApplyMsg) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
-
-
 }
 
 
@@ -545,11 +582,9 @@ persister *Persister, applyCh chan ApplyMsg) *Raft {
 		rf.MainLoop();
 	}()
 
-	/*
 	go func()  {
 		rf.ApplyLog(applyCh);
 	}()
-	*/
 
 	return rf
 }

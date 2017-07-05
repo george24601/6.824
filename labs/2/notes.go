@@ -22,3 +22,12 @@ for {
 
 
 //make sure declare channel with buffer capacity, otherwise it will be blocking!
+
+
+//note that paper says receiving a request, leader should wait until rep is done. But in fact, the lab request says Start() should return immediately! 
+
+
+//due the the nature of concurrency, EVERY TIME you acquire a lock, you need to valdiate a server's stauts first!
+
+
+//due to the nature of concurrency, ALL blocking calls should happen outside the lock, this includes both RPC calls and channel pipes
