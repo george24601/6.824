@@ -1,4 +1,4 @@
-cd src/raft
+ct -run 2B src/raft
 GOPATH=~/6.824
 export GOPATH
 
@@ -6,12 +6,14 @@ export GOPATH
 go test -race
 
 ###part 2A
-go test -run 2A
-
-> out
+go test -run 2A > out
 
 
 ###part 2B
-go test -run 2B
-
 go test -run 2B > out
+
+
+####part 2C
+go test -run 'TestPersist12C' > out
+
+go test -run 2C > out

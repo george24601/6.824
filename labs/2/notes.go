@@ -31,3 +31,5 @@ for {
 
 
 //due to the nature of concurrency, ALL blocking calls should happen outside the lock, this includes both RPC calls and channel pipes
+
+//to persist your raft state in C, you need to do make sure fields are in UPPER CASE or gob will ignore that!
