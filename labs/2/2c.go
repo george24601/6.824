@@ -153,6 +153,7 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term int
 	Success bool 
+	NextI int
 }
 
 
@@ -198,23 +199,38 @@ func (rf *Raft) AppendToLogWithinLock(args *AppendEntriesArgs) {
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
+	curLogLen := len(rf.Log)
 
 	if args.Term < rf.CurrentTerm {
 		DPrintf("%d of status %d, term %d refused to append entries for %d at term %d, because request is from the past", rf.me, rf.status, rf.CurrentTerm, args.LeaderId, args.Term)
 		reply.Success = false
-		reply.Term = rf.CurrentTerm
+		reply.NextI = curLogLen
 		rf.mu.Unlock()
 		return
 	}
 
 	rf.CheckOldTermWithinLock(args.Term)
 
-	curLogLen := len(rf.Log)
-
 	if curLogLen <= args.PrevLogIndex  || rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		DPrintf("%d of status %d, term %d refused to append entries for %d at term %d, because prevLogTerm does not match the local Log", rf.me, rf.status, rf.CurrentTerm, args.LeaderId, args.Term)
 		reply.Success = false
 		reply.Term = rf.CurrentTerm
+
+		if curLogLen <= args.PrevLogIndex {
+			reply.NextI = curLogLen
+		}else {
+			badTerm := rf.Log[args.PrevLogIndex].Term
+			i := args.PrevLogIndex - 1
+
+			for ; i >= 0; i-- {
+				if rf.Log[i].Term != badTerm {
+					break
+				}
+			}
+
+			reply.NextI = i + 1
+		}
+
 		rf.persist()
 		rf.mu.Unlock()
 		return
@@ -224,6 +240,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Success = true
 	reply.Term = args.Term
+	reply.NextI = curLogLen
 
 	if rf.status != 0 {
 		DPrintf("%d of status %d, term %d ready to append, and thus becoming follower!", rf.me, rf.status, rf.CurrentTerm)
@@ -250,6 +267,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	defer rf.persist()
 
 	index := -1
 	term := -1
@@ -263,14 +282,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.matchIndex[rf.me] = len(rf.Log) - 1
 
 		DPrintf("START Leader %d at term %d just appended locally, local next index at %d", rf.me, rf.CurrentTerm, len(rf.Log))
-
-		rf.persist()
-		rf.mu.Unlock()
-
-		rf.RepToAllFs()
-
-	}else{
-		rf.mu.Unlock()
 	}
 
 	return index, term, isLeader
@@ -434,6 +445,31 @@ func (rf *Raft) RepToAllFs(){
 	}
 }
 
+func (rf *Raft) CreateAppendArgWithinLock(k int) AppendEntriesArgs {
+	args := AppendEntriesArgs{}
+	args.Term = rf.CurrentTerm
+	args.LeaderId = rf.me
+
+	lastLogIndex := len(rf.Log) - 1
+
+	nextIndexF := rf.nextIndex[k]
+	if lastLogIndex >= nextIndexF {
+		DPrintf("RepToFollower: Leader: %d at term %d appending to %d starting from index %d " , rf.me, args.Term, k, nextIndexF)
+		args.PrevLogIndex = nextIndexF - 1
+		args.PrevLogTerm = rf.Log[args.PrevLogIndex].Term
+		args.Entries = rf.Log[nextIndexF:]
+	} else {
+		//DPrintf("Leader: %d at term %d, lastLogIndex %d, appending to %d, nextIndex at %d as heartbeat??? " , rf.me, args.Term, lastLogIndex, k, rf.nextIndex[k])
+		args.PrevLogIndex = lastLogIndex
+		args.PrevLogTerm = rf.Log[args.PrevLogIndex].Term
+		args.Entries = make([]LE, 0) 
+	}
+
+	args.LeaderCommit = rf.commitIndex
+
+	return args
+}
+
 func (rf *Raft) RepToFollower(k int) {
 	for {
 		rf.mu.Lock()
@@ -442,31 +478,13 @@ func (rf *Raft) RepToFollower(k int) {
 			return
 		}
 
-		args := &AppendEntriesArgs{}
-		args.Term = rf.CurrentTerm
-		args.LeaderId = rf.me
-
 		lastLogIndex := len(rf.Log) - 1
-
-		nextIndexF := rf.nextIndex[k]
-		if lastLogIndex >= nextIndexF {
-			DPrintf("RepToFollower: Leader: %d at term %d appending to %d starting from index %d " , rf.me, args.Term, k, nextIndexF)
-			args.PrevLogIndex = nextIndexF - 1
-			args.PrevLogTerm = rf.Log[args.PrevLogIndex].Term
-			args.Entries = rf.Log[nextIndexF:]
-		} else {
-			//DPrintf("Leader: %d at term %d, lastLogIndex %d, appending to %d, nextIndex at %d as heartbeat??? " , rf.me, args.Term, lastLogIndex, k, rf.nextIndex[k])
-			args.PrevLogIndex = lastLogIndex
-			args.PrevLogTerm = rf.Log[args.PrevLogIndex].Term
-			args.Entries = make([]LE, 0) 
-		}
-
-		args.LeaderCommit = rf.commitIndex
+		args := rf.CreateAppendArgWithinLock(k)
 
 		rf.mu.Unlock()
 
 		reply := &AppendEntriesReply{}
-		ok := rf.sendAppendEntries(k, args, reply)
+		ok := rf.sendAppendEntries(k, &args, reply)
 
 		if !ok {
 			//DPrintf("NOT OK: Leader: %d append to server %d at lastLogindex %d" , rf.me, k, lastLogIndex)
@@ -475,7 +493,7 @@ func (rf *Raft) RepToFollower(k int) {
 
 		rf.mu.Lock()
 		if rf.status != 2 {
-			DPrintf("!!!!!Leader: %d at term %d find itself is at status %d, therefore becoming a follower" , rf.me, rf.CurrentTerm, rf.status)
+			DPrintf("!!!!!Leader: %d at term %d find itself is actually at status %d, therefore becoming a follower" , rf.me, rf.CurrentTerm, rf.status)
 			rf.status = 0
 			rf.mu.Unlock()
 			return
@@ -493,12 +511,20 @@ func (rf *Raft) RepToFollower(k int) {
 			}
 			rf.matchIndex[k] = lastLogIndex
 			rf.nextIndex[k] = lastLogIndex + 1
+
+			if lastLogIndex + 1 != reply.NextI {
+				DPrintf("!!!!Leader: %d at term %d append to server %d at term %d successfully, update that server's matchIndex to %d, leader's current lastIndex at %d" , rf.me, rf.CurrentTerm, k, reply.Term, lastLogIndex, len(rf.Log) - 1)
+			}
+
 			rf.UpdateCIWithinLock()
 			rf.mu.Unlock()
 			return
 		}else {
 			DPrintf("Leader: %d at term %d UNABLE TO append to server %d at last index %d, reducing nextIndex currently at %d " , rf.me, rf.CurrentTerm, k, lastLogIndex, rf.nextIndex[k])
-			rf.nextIndex[k]--
+
+			rf.nextIndex[k] = reply.NextI
+
+
 		}
 		rf.mu.Unlock()
 	}
@@ -510,11 +536,21 @@ func (rf *Raft) RunLeader() {
 	var curStatus int
 
 	rf.mu.Lock()
-	for i := 0; i < len(rf.peers); i++  {
-		rf.nextIndex[i] = len(rf.Log)
-		rf.matchIndex[i] = 0 
+	curStatus = rf.status
+	curTerm = rf.CurrentTerm
+
+	if curStatus != 2 {
+		DPrintf("!!!Leader %d at term %d state out of sync at start, exit leader state" , rf.me, curTerm)
+		rf.mu.Unlock()
+		return
+	}else{
+
+		for i := 0; i < len(rf.peers); i++  {
+			rf.nextIndex[i] = len(rf.Log)
+			rf.matchIndex[i] = 0 
+		}
+		rf.mu.Unlock()
 	}
-	rf.mu.Unlock()
 
 	for{
 		rf.mu.Lock()

@@ -14,6 +14,10 @@ go test -run 2B > out
 
 
 ####part 2C
+simple case
 go test -run 'TestPersist12C' > out
+
+#this one often fails!
+go test -run 'TestReliableChurn2C' > out
 
 go test -run 2C > out
