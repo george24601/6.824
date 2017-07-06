@@ -105,39 +105,37 @@ func (rf *Raft) MoreUpToDateWithinLock(args *RequestVoteArgs) bool {
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	defer rf.persist()
 
 	if args.Term < rf.CurrentTerm {
 		DPrintf("%d of status %d, term %d refused a vote from %d at term %d", rf.me, rf.status, rf.CurrentTerm, args.CandidateId, args.Term)
 		reply.VoteGranted = false
 		reply.Term = rf.CurrentTerm
-		return
+	}else{
+		rf.CheckOldTermWithinLock(args.Term)
+
+		if rf.VotedFor < 0 || rf.VotedFor == args.CandidateId  {
+
+			if (rf.MoreUpToDateWithinLock(args)){
+				DPrintf("%d of status %d, term %d can not vote for %d at term %d, because its Log is more up-topdate", rf.me, rf.status, rf.CurrentTerm, args.CandidateId, args.Term)
+				reply.VoteGranted = false
+				reply.Term = rf.CurrentTerm
+			}else{
+				DPrintf("%d of status %d, term %d grants a vote to %d at term %d", rf.me, rf.status, rf.CurrentTerm, args.CandidateId, args.Term)
+				reply.VoteGranted = true
+				reply.Term =  args.Term
+				rf.VotedFor = args.CandidateId
+			}
+		}else{
+			DPrintf("%d of status %d, term %d refuses to vote for %d at term %d, because it voted already this term", rf.me, rf.status, rf.CurrentTerm, args.CandidateId, args.Term)
+			reply.VoteGranted = false
+			reply.Term =  args.Term
+		}
 	}
 
-	rf.CheckOldTermWithinLock(args.Term)
+	rf.mu.Unlock()
 
-	if rf.VotedFor < 0 || rf.VotedFor == args.CandidateId  { //TODO: Log check
-
-		if (rf.MoreUpToDateWithinLock(args)){
-			DPrintf("%d of status %d, term %d can not vote for %d at term %d, because its Log is more up-topdate", rf.me, rf.status, rf.CurrentTerm, args.CandidateId, args.Term)
-
-			reply.VoteGranted = false
-			reply.Term = rf.CurrentTerm
-		}else{
-			DPrintf("%d of status %d, term %d grants a vote to %d at term %d", rf.me, rf.status, rf.CurrentTerm, args.CandidateId, args.Term)
-			reply.VoteGranted = true
-			reply.Term =  args.Term
-			rf.VotedFor = args.CandidateId
-
-			if rf.status == 0{
-				rf.fHB <- args.Term
-			}
-		}
-	}else{
-		DPrintf("%d of status %d, term %d refuses to vote for %d at term %d, because it voted already this term", rf.me, rf.status, rf.CurrentTerm, args.CandidateId, args.Term)
-		reply.VoteGranted = false
-		reply.Term =  args.Term
+	if reply.VoteGranted {
+		rf.fHB <- args.Term
 	}
 }
 
@@ -153,9 +151,8 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term int
 	Success bool 
-	NextI int
+	ConfI int
 }
-
 
 func (rf *Raft) AppendToLogWithinLock(args *AppendEntriesArgs) {
 	newIndex := 0
@@ -204,7 +201,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term < rf.CurrentTerm {
 		DPrintf("%d of status %d, term %d refused to append entries for %d at term %d, because request is from the past", rf.me, rf.status, rf.CurrentTerm, args.LeaderId, args.Term)
 		reply.Success = false
-		reply.NextI = curLogLen
+		reply.ConfI = curLogLen
 		rf.mu.Unlock()
 		return
 	}
@@ -217,7 +214,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Term = rf.CurrentTerm
 
 		if curLogLen <= args.PrevLogIndex {
-			reply.NextI = curLogLen
+			reply.ConfI = curLogLen
 		}else {
 			badTerm := rf.Log[args.PrevLogIndex].Term
 			i := args.PrevLogIndex - 1
@@ -228,7 +225,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				}
 			}
 
-			reply.NextI = i + 1
+			reply.ConfI = i + 1
 		}
 
 		rf.persist()
@@ -240,7 +237,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Success = true
 	reply.Term = args.Term
-	reply.NextI = curLogLen
+	reply.ConfI = curLogLen
 
 	if rf.status != 0 {
 		DPrintf("%d of status %d, term %d ready to append, and thus becoming follower!", rf.me, rf.status, rf.CurrentTerm)
@@ -457,12 +454,15 @@ func (rf *Raft) CreateAppendArgWithinLock(k int) AppendEntriesArgs {
 		DPrintf("RepToFollower: Leader: %d at term %d appending to %d starting from index %d " , rf.me, args.Term, k, nextIndexF)
 		args.PrevLogIndex = nextIndexF - 1
 		args.PrevLogTerm = rf.Log[args.PrevLogIndex].Term
-		args.Entries = rf.Log[nextIndexF:]
+		args.Entries = make([]LE, len(rf.Log) -  nextIndexF)
+
+		//Deep copy so that rf.Log will not be referred indirectly outside lock by go slices
+		copy(args.Entries, rf.Log[nextIndexF:])
 	} else {
 		//DPrintf("Leader: %d at term %d, lastLogIndex %d, appending to %d, nextIndex at %d as heartbeat??? " , rf.me, args.Term, lastLogIndex, k, rf.nextIndex[k])
 		args.PrevLogIndex = lastLogIndex
 		args.PrevLogTerm = rf.Log[args.PrevLogIndex].Term
-		args.Entries = make([]LE, 0) 
+		args.Entries = make([]LE, 0)
 	}
 
 	args.LeaderCommit = rf.commitIndex
@@ -512,7 +512,7 @@ func (rf *Raft) RepToFollower(k int) {
 			rf.matchIndex[k] = lastLogIndex
 			rf.nextIndex[k] = lastLogIndex + 1
 
-			if lastLogIndex + 1 != reply.NextI {
+			if lastLogIndex + 1 != reply.ConfI {
 				DPrintf("!!!!Leader: %d at term %d append to server %d at term %d successfully, update that server's matchIndex to %d, leader's current lastIndex at %d" , rf.me, rf.CurrentTerm, k, reply.Term, lastLogIndex, len(rf.Log) - 1)
 			}
 
@@ -520,10 +520,9 @@ func (rf *Raft) RepToFollower(k int) {
 			rf.mu.Unlock()
 			return
 		}else {
-			DPrintf("Leader: %d at term %d UNABLE TO append to server %d at last index %d, reducing nextIndex currently at %d " , rf.me, rf.CurrentTerm, k, lastLogIndex, rf.nextIndex[k])
+			DPrintf("Leader: %d at term %d UNABLE TO append to server %d at lastLogindex %d, reducing nextIndex currently at %d to %d" , rf.me, rf.CurrentTerm, k, lastLogIndex, rf.nextIndex[k], reply.ConfI)
 
-			rf.nextIndex[k] = reply.NextI
-
+			rf.nextIndex[k] = reply.ConfI
 
 		}
 		rf.mu.Unlock()
@@ -588,7 +587,6 @@ func (rf *Raft) MainLoop() {
 		}
 	}
 }
-
 
 func (rf *Raft) ApplyLog(applyCh chan ApplyMsg) {
 	for {
