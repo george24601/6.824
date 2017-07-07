@@ -178,7 +178,6 @@ func (rf *Raft) AppendToLogWithinLock(args *AppendEntriesArgs) {
 		rf.Log = append(rf.Log, args.Entries[newIndex])
 	}
 
-
 	if args.LeaderCommit > rf.commitIndex {
 		DPrintf("%d of status %d, term %d updating commit index currently at %d, leaderCommit:%d, index of last new entry: %d", rf.me, rf.status, rf.CurrentTerm, rf.commitIndex, args.LeaderCommit, args.PrevLogIndex + newELen)
 
@@ -201,6 +200,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term < rf.CurrentTerm {
 		DPrintf("%d of status %d, term %d refused to append entries for %d at term %d, because request is from the past", rf.me, rf.status, rf.CurrentTerm, args.LeaderId, args.Term)
 		reply.Success = false
+		reply.Term = rf.CurrentTerm
 		reply.ConfI = curLogLen
 		rf.mu.Unlock()
 		return
@@ -513,7 +513,7 @@ func (rf *Raft) RepToFollower(k int) {
 			rf.nextIndex[k] = lastLogIndex + 1
 
 			if lastLogIndex + 1 != reply.ConfI {
-				DPrintf("!!!!Leader: %d at term %d append to server %d at term %d successfully, update that server's matchIndex to %d, leader's current lastIndex at %d" , rf.me, rf.CurrentTerm, k, reply.Term, lastLogIndex, len(rf.Log) - 1)
+				DPrintf("!!!!Leader: %d at term %d append to server %d at term %d successfully, update that server's matchIndex to %d, leader's current lastIndex at %d, next conflicting index at %d" , rf.me, rf.CurrentTerm, k, reply.Term, lastLogIndex, len(rf.Log) - 1, reply.ConfI)
 			}
 
 			rf.UpdateCIWithinLock()
@@ -526,6 +526,8 @@ func (rf *Raft) RepToFollower(k int) {
 
 		}
 		rf.mu.Unlock()
+
+	//	time.Sleep(10 * time.Millisecond)
 	}
 }
 
