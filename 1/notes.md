@@ -1,4 +1,18 @@
-/*
+Preview Question
+----------
+How soon after it receives the first file of intermediate data can a reduce worker start calling the application's Reduce function? Explain your answer.
+
+
+Review Questions
+----------
+Sample word count MapReduce(MR) pesudo-code
+Why MR requires the function purely functional
+Why many more input splits than workers?
+During the whole MR process, what files are written into GFS?
+What if the master accidentally starts *two* Map() workers on same input?
+ What if two Reduce() workers for the same partition of intermediate data?
+Examples that does not fit MR model
+
 BEFORE YOU START part 1, you need to understand
 1.Slice in Go
 
@@ -6,8 +20,7 @@ BEFORE YOU START part 1, you need to understand
 
 3.Map in Go
 
-*/
-
+```
 //To read the whole file
 dat, err := ioutil.ReadFile("/tmp/dat")
 str = string(dat)
@@ -34,8 +47,8 @@ for {
 	}
 }
 file.Close
+```
 
-/*
 Before you start part 3, you need to understand
 1. goroutine
 
@@ -44,4 +57,3 @@ Before you start part 3, you need to understand
 3. RPC in go
 
 See master.go , and worker.go for how RPC is used in this library
-*/
