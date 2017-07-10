@@ -1,0 +1,5 @@
+1. implement as a replicated state machine
+
+2. same log index may appear multiple times
+
+3. use a simple seq number to ensure no duplicate append command
