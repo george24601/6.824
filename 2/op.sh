@@ -10,7 +10,7 @@ go test -run 2A > out
 
 
 ###part 2B
-go test -run 2B > out
+go test -run 2C > out 2>error
 
 
 ####part 2C
@@ -23,6 +23,6 @@ go test -race -run 'TestPersist22C' > out 2>error
 #this one often fails!
 go test -run 'TestReliableChurn2C' > out
 
-go test -race -run 'TestFigure8Unreliable2C'
+go test -run 'TestFigure8Unreliable2C' > out 2>error
 
-go test -run 2C > out
+go test -run 2C >out 2>error
