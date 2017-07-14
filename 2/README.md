@@ -22,10 +22,48 @@ matchIndex. Describe a specific situation in which this change would lead to inc
 
 Notes for 2A
 ---------
+1. The stale term - status check must apply to ALL request/responses
+2. In 2a, we just need to worry about AppendEntries with empty slice as data payload 
+3. The main instance should be stared in a goroutine, and run in an infinite loop
+4. You need a way to mark the status of each raft instance: is it a follower, candidate, or leader?
+5. Avoid RPC calls within lock. Release the mutex before them.
+6. Every time you acquire the mutex, you need to check if the current instance state is consist, e.g., is the instance in a correct status?
+7. To implmenet election timeout 
+
+```
+for {
+	select {
+		case <- heartbeatChannel: //your RPC call should feed into this channel
+		case <- time.After(electionTimeout):{
+				//Your code to change the instance status to candidate
+			break
+						    }
+	}
+}
+```
+8. To generate random time out
+```
+func randomElectionTimeout() time.Duration {
+	return time.Duration(250 + rand.Intn(500) ) * time.Millisecond
+}
+
+```
+
 
 Notes for 2B
 --------
+1. Applying the command should be on its own goroutine. Don't put it in the main run loop
+2. If there is no new command to apply, use 
+```
+time.Sleep(10 * time.Millisecond)
+```
+To sleep a bit between
+3. Use https://thesquareplanet.com/blog/students-guide-to-raft/ to see how to implement the quick backoff. Otherwise, the final few tests may not pass
+4. Raft is ASYNC. This means even if you want to start replicate process inside start(), it has to be on a separte go routine. However, you most likely don't need to try replicate inside start()
+
 
 Notes for 2C
 ---------
+1. Every time you unlock, check if you need to to persist
+
 
