@@ -66,4 +66,4 @@ Notes for 2C
 ---------
 1. Every time you unlock, check if you need to to persist
 
-
+2. The test suite has a lot of failover cases. Most of the test failure is caused by subtle bugs in 2A and 2B 
