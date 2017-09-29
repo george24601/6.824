@@ -89,4 +89,4 @@ that can be selected and organized by the programmer of a specific application.
 
 This argument against additional layers is an example of a design principle known as => The application knows best. 
 
-TODO: read 7.2.6
+At the interface between the application and the end-to-end layer, data is identified as a stream or message. The end- to-end layer divides the stream or message up into a series of segments and hands them to the network layer for delivery. The network layer encapsulates each segment in a packet which it forwards through the network with the help of the link layer. The link layer transmits the packet in a frame. If the link layer is itself a network, then this frame is a message as viewed by the underlying network.

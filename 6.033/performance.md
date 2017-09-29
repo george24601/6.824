@@ -1,3 +1,4 @@
+Hitachi	7K400
 capacity:	400GB	
 number	of	platters:	5	
 number	of	heads:	10	
@@ -7,6 +8,7 @@ time	for	one	revolution:	8.3ms
 average	read	seek	time:	8.2ms	
 average	write	seek	time:	9.2ms
 
+OCZ	Vertex	3
 sequential	read:	400MB/sec	
 sequential	write:	200-300MB/sec	
 random	4K	reads:	23MB/sec	
